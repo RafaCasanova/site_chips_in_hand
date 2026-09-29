@@ -3,8 +3,11 @@ import { ActivatedRoute } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { ApiClientService } from '../core/api-client.service';
 import { PublicBillingLink } from '../core/api.models';
+import { I18nService } from '../core/i18n.service';
+import { TranslatePipe } from '../shared/translate.pipe';
 
 @Component({
+  imports: [TranslatePipe],
   template: `
     <main class="public-page">
       <section class="public-brand" aria-label="Chips in Hand">
@@ -16,50 +19,50 @@ import { PublicBillingLink } from '../core/api.models';
         @if (loading()) {
           <div class="loading-state">
             <span class="spinner" aria-hidden="true"></span>
-            <h1>Consultando cobrança…</h1>
-            <p>Estamos validando este link com segurança.</p>
+            <h1>{{ 'billing.loadingTitle' | t }}</h1>
+            <p>{{ 'billing.loadingDescription' | t }}</p>
           </div>
         } @else if (billing(); as item) {
-          <p class="eyebrow">Cobrança compartilhada</p>
+          <p class="eyebrow">{{ 'billing.shared' | t }}</p>
           <h1>{{ item.companyName }}</h1>
           <div class="amount-block">
-            <span>Saldo atual</span>
+            <span>{{ 'billing.currentBalance' | t }}</span>
             <strong>{{ money(item.balanceCents, item.currency) }}</strong>
           </div>
           <dl class="billing-details">
             <div>
-              <dt>Competência</dt>
+              <dt>{{ 'billing.referenceMonth' | t }}</dt>
               <dd>{{ referenceMonth(item.referenceMonth) }}</dd>
             </div>
             <div>
-              <dt>Vencimento</dt>
+              <dt>{{ 'billing.dueDate' | t }}</dt>
               <dd>{{ date(item.dueDate) }}</dd>
             </div>
             <div>
-              <dt>Valor total</dt>
+              <dt>{{ 'billing.total' | t }}</dt>
               <dd>{{ money(item.totalCents, item.currency) }}</dd>
             </div>
             <div>
-              <dt>Situação</dt>
+              <dt>{{ 'billing.status' | t }}</dt>
               <dd>
                 <span class="status-pill">{{ status(item.status) }}</span>
               </dd>
             </div>
           </dl>
           @if (safeDeepLink(item.deepLink); as deepLink) {
-            <a class="button button-primary button-full" [href]="deepLink" rel="noreferrer"
-              >Abrir no aplicativo</a
-            >
+            <a class="button button-primary button-full" [href]="deepLink" rel="noreferrer">{{
+              'billing.openApp' | t
+            }}</a>
           }
           <p class="privacy-note">
-            Esta página mostra somente os dados essenciais fornecidos pela clínica.
+            {{ 'billing.privacy' | t }}
           </p>
         } @else {
           <div class="empty-state" role="status">
             <div class="empty-icon" aria-hidden="true">!</div>
-            <h1>Link indisponível</h1>
-            <p>Este link é inválido, expirou ou não está mais disponível.</p>
-            <p>Solicite um novo link diretamente à clínica.</p>
+            <h1>{{ 'billing.unavailable' | t }}</h1>
+            <p>{{ 'billing.unavailableDescription' | t }}</p>
+            <p>{{ 'billing.requestNew' | t }}</p>
           </div>
         }
       </section>
@@ -70,6 +73,7 @@ import { PublicBillingLink } from '../core/api.models';
 export class BillingPage implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(ApiClientService);
+  private readonly i18n = inject(I18nService);
 
   protected readonly loading = signal(true);
   protected readonly billing = signal<PublicBillingLink | null>(null);
@@ -91,33 +95,35 @@ export class BillingPage implements OnInit {
   }
 
   protected money(cents: number, currency: string): string {
-    const safeCurrency = /^[A-Z]{3}$/.test(currency) ? currency : 'BRL';
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: safeCurrency }).format(
-      cents / 100,
-    );
+    return this.i18n.formatCurrency(cents, currency);
   }
 
   protected date(value: string): string {
     const parsed = new Date(`${value}T00:00:00Z`);
     if (Number.isNaN(parsed.valueOf())) return value;
-    return new Intl.DateTimeFormat('pt-BR', { timeZone: 'UTC' }).format(parsed);
+    return this.i18n.formatDate(parsed, { timeZone: 'UTC' });
   }
 
   protected referenceMonth(value: string): string {
     if (!/^\d{4}-\d{2}$/.test(value)) return value;
-    const [year, month] = value.split('-');
-    return `${month}/${year}`;
+    const [year, month] = value.split('-').map(Number);
+    return this.i18n.formatDate(new Date(Date.UTC(year, month - 1, 1)), {
+      month: '2-digit',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
   }
 
   protected status(value: string): string {
-    const labels: Record<string, string> = {
-      issued: 'Em aberto',
-      partially_paid: 'Parcialmente paga',
-      paid: 'Paga',
-      overdue: 'Vencida',
-      cancelled: 'Cancelada',
-    };
-    return labels[value] ?? 'Atualizada';
+    const labels = {
+      issued: 'billing.status.issued',
+      partially_paid: 'billing.status.partiallyPaid',
+      paid: 'billing.status.paid',
+      overdue: 'billing.status.overdue',
+      cancelled: 'billing.status.cancelled',
+    } as const;
+    const key = labels[value as keyof typeof labels] ?? 'billing.status.updated';
+    return this.i18n.translate(key);
   }
 
   protected safeDeepLink(value: string): string | null {

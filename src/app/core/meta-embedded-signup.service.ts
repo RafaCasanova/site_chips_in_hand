@@ -1,5 +1,7 @@
 import { DOCUMENT } from '@angular/common';
 import { inject, Injectable } from '@angular/core';
+import { I18nService } from './i18n.service';
+import { abortError } from './polling';
 
 export interface MetaSignupConfiguration {
   appId: string;
@@ -54,19 +56,31 @@ export class MetaSignupError extends Error {
 @Injectable({ providedIn: 'root' })
 export class MetaEmbeddedSignupService {
   private readonly document = inject(DOCUMENT);
+  private readonly i18n = inject(I18nService);
   private readonly window = this.document.defaultView;
   private sdkPromise: Promise<FacebookSdk> | null = null;
 
-  async run(configuration: MetaSignupConfiguration): Promise<MetaSignupResult> {
+  async prepare(): Promise<void> {
+    await this.loadSdk();
+  }
+
+  async run(
+    configuration: MetaSignupConfiguration,
+    signal?: AbortSignal,
+  ): Promise<MetaSignupResult> {
+    if (signal?.aborted) throw abortError();
     this.validateConfiguration(configuration);
     const expiresAt = Date.parse(configuration.expiresAt);
     const remaining = expiresAt - Date.now();
     if (!Number.isFinite(expiresAt) || remaining <= 0) {
-      throw new MetaSignupError('A autorização expirou. Inicie a conexão novamente.');
+      throw new MetaSignupError(this.i18n.translate('whatsapp.metaExpired'));
     }
-    if (!this.window) throw new MetaSignupError('O cadastro da Meta exige um navegador.');
+    if (!this.window)
+      throw new MetaSignupError(this.i18n.translate('whatsapp.metaBrowserRequired'));
 
-    const facebook = await this.loadSdk();
+    // prepare() runs before the explicit user click, preserving popup user activation here.
+    const facebook = this.window.FB ?? (await this.loadSdk());
+    if (signal?.aborted) throw abortError();
     facebook.init({
       appId: configuration.appId,
       version: configuration.sdkVersion,
@@ -82,9 +96,16 @@ export class MetaEmbeddedSignupService {
 
       const cleanup = () => {
         this.window?.removeEventListener('message', onMessage);
+        signal?.removeEventListener('abort', cancel);
         this.window?.clearTimeout(timeout);
         code = '';
         assets = null;
+      };
+      const cancel = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(abortError());
       };
       const fail = (message: string) => {
         if (settled) return;
@@ -102,7 +123,7 @@ export class MetaEmbeddedSignupService {
       const onMessage = (event: MessageEvent) => {
         const result = this.parseSignupMessage(event);
         if (result === 'cancel') {
-          fail('O cadastro na Meta foi cancelado antes da conclusão.');
+          fail(this.i18n.translate('whatsapp.metaCancelled'));
           return;
         }
         if (result) {
@@ -111,17 +132,18 @@ export class MetaEmbeddedSignupService {
         }
       };
       const timeout = this.window!.setTimeout(
-        () => fail('A autorização da Meta expirou. Inicie a conexão novamente.'),
+        () => fail(this.i18n.translate('whatsapp.metaAuthorizationExpired')),
         Math.min(remaining, 10 * 60_000),
       );
 
       this.window!.addEventListener('message', onMessage);
+      signal?.addEventListener('abort', cancel, { once: true });
       try {
         facebook.login(
           (response) => {
             const returnedCode = response.authResponse?.code;
             if (!returnedCode || returnedCode.length > 4096) {
-              fail('O cadastro na Meta foi cancelado antes da conclusão.');
+              fail(this.i18n.translate('whatsapp.metaCancelled'));
               return;
             }
             code = returnedCode;
@@ -135,21 +157,23 @@ export class MetaEmbeddedSignupService {
           },
         );
       } catch {
-        fail('Não foi possível iniciar o cadastro na Meta.');
+        fail(this.i18n.translate('whatsapp.metaStartFailed'));
       }
     });
   }
 
   private loadSdk(): Promise<FacebookSdk> {
     if (!this.window)
-      return Promise.reject(new MetaSignupError('O cadastro da Meta exige um navegador.'));
+      return Promise.reject(
+        new MetaSignupError(this.i18n.translate('whatsapp.metaBrowserRequired')),
+      );
     if (this.window.FB) return Promise.resolve(this.window.FB);
     if (this.sdkPromise) return this.sdkPromise;
 
     this.sdkPromise = new Promise<FacebookSdk>((resolve, reject) => {
       const timeout = this.window!.setTimeout(() => {
         this.sdkPromise = null;
-        reject(new MetaSignupError('Não foi possível carregar o serviço da Meta.'));
+        reject(new MetaSignupError(this.i18n.translate('whatsapp.metaLoadFailed')));
       }, 15_000);
 
       const finish = () => {
@@ -160,7 +184,7 @@ export class MetaEmbeddedSignupService {
       const fail = () => {
         this.window?.clearTimeout(timeout);
         this.sdkPromise = null;
-        reject(new MetaSignupError('Não foi possível carregar o serviço da Meta.'));
+        reject(new MetaSignupError(this.i18n.translate('whatsapp.metaLoadFailed')));
       };
 
       this.window!.fbAsyncInit = finish;
@@ -173,7 +197,8 @@ export class MetaEmbeddedSignupService {
 
       const script = this.document.createElement('script');
       script.id = 'facebook-jssdk';
-      script.src = 'https://connect.facebook.net/pt_BR/sdk.js';
+      const sdkLocale = { 'pt-BR': 'pt_BR', en: 'en_US', es: 'es_LA' }[this.i18n.locale()];
+      script.src = `https://connect.facebook.net/${sdkLocale}/sdk.js`;
       script.async = true;
       script.defer = true;
       script.crossOrigin = 'anonymous';
@@ -202,6 +227,12 @@ export class MetaEmbeddedSignupService {
     const message = payload as { type?: unknown; event?: unknown; data?: unknown };
     if (message.type !== 'WA_EMBEDDED_SIGNUP') return null;
     if (message.event === 'CANCEL' || message.event === 'ERROR') return 'cancel';
+    if (
+      !['FINISH', 'FINISH_ONLY_WABA', 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING'].includes(
+        String(message.event),
+      )
+    )
+      return null;
     if (!message.data || typeof message.data !== 'object') return null;
 
     const data = message.data as {
@@ -220,6 +251,9 @@ export class MetaEmbeddedSignupService {
       const url = new URL(origin);
       return (
         url.protocol === 'https:' &&
+        !url.port &&
+        !url.username &&
+        !url.password &&
         (url.hostname === 'facebook.com' || url.hostname.endsWith('.facebook.com'))
       );
     } catch {
@@ -232,10 +266,10 @@ export class MetaEmbeddedSignupService {
       !/^\d{4,32}$/.test(configuration.appId) ||
       !/^\d{4,64}$/.test(configuration.configurationId)
     ) {
-      throw new MetaSignupError('A configuração do WhatsApp recebida é inválida.');
+      throw new MetaSignupError(this.i18n.translate('whatsapp.metaInvalidConfig'));
     }
     if (!/^v\d+\.\d+$/.test(configuration.sdkVersion)) {
-      throw new MetaSignupError('A versão do SDK da Meta recebida é inválida.');
+      throw new MetaSignupError(this.i18n.translate('whatsapp.metaInvalidSdk'));
     }
   }
 }

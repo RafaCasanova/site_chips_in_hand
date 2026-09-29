@@ -1,6 +1,5 @@
-node_modules
 dist
+node_modules
 .angular
-coverage
 package-lock.json
-public/*.svg
+coverage

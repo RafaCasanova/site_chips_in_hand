@@ -7,7 +7,11 @@
     "build": "ng build",
     "check": "ng build --configuration development",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test --watch=false"
+    "test": "ng test --watch=false",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "preview": "node scripts/serve-built.mjs",
+    "verify:build": "node scripts/check-build.mjs"
   },
   "private": true,
   "packageManager": "npm@12.0.2",

@@ -15,7 +15,10 @@ function unavailableError(): ApiError {
     error: {
       code: 'billing_link_not_found',
       message: 'A cobrança interna 123 não existe.',
+      messageKey: 'error.billing_link_not_found',
+      messageParams: {},
       fields: {},
+      fieldMessages: {},
       retryable: false,
       requestId: 'request-private',
       details: { internalInvoiceId: 'invoice-private' },
